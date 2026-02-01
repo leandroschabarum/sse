@@ -214,7 +214,3 @@ data: {"message":"Hello, World!"}
 - Connections are automatically tracked when created via `Server.createConnection()`
 - When a client disconnects, the connection is automatically removed from the pool
 - Connection IDs can be specified via the `x-request-id` header for targeted messaging
-
-## License
-
-UNLICENSED
