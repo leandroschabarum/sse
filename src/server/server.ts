@@ -1,6 +1,6 @@
-import { Request, Response } from "./types";
-import { Connection } from "./connection";
-import { uuidv4 } from "../random";
+import { Request, Response } from './types';
+import { Connection } from './connection';
+import { uuidv4 } from '../random';
 
 const HEADER_REQUEST_ID = 'x-request-id';
 

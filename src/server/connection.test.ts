@@ -51,7 +51,10 @@ describe('Connection', () => {
 		});
 
 		it('should accept an optional id parameter', () => {
-			const connection = new TestableConnection(mockResponse, 'custom-id');
+			const connection = new TestableConnection(
+				mockResponse,
+				'custom-id'
+			);
 
 			expect(connection).toBeInstanceOf(Connection);
 		});
