@@ -3,7 +3,6 @@
 	"version": "1.0.0",
 	"description": "Server-sent-events",
 	"type": "module",
-	"private": true,
 	"author": "Leandro Schabarum <leandroschabarum.98@gmail.com>",
 	"license": "UNLICENSED",
 	"scripts": {
