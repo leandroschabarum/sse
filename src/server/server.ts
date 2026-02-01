@@ -22,7 +22,9 @@ export class Server<TReq extends Request, TRes extends Response> {
 	}
 
 	protected generateId(req: TReq): string {
-		return req.headers[HEADER_REQUEST_ID]?.trim() || uuidv4();
+		const data = req.headers[HEADER_REQUEST_ID];
+
+		return (typeof data === 'string' && data?.trim()) || uuidv4();
 	}
 
 	public broadcast<T>(event: string, data?: T): void {
