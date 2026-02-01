@@ -135,7 +135,9 @@ describe('Server', () => {
 			server.createConnection(mockRequest, mockResponse);
 
 			expect(server.getConnectionsMap().size).toBe(1);
-			expect(server.getConnectionsMap().has('test-connection-id')).toBe(true);
+			expect(server.getConnectionsMap().has('test-connection-id')).toBe(
+				true
+			);
 		});
 
 		it('should set SSE headers on the response', () => {

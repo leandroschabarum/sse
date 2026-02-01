@@ -19,8 +19,9 @@ export class Hub {
 
 	public to(id: string | '*') {
 		return {
-			emit: <T>(event: string, data?: T) => this.trigger<T>(id, event, data)
-		}
+			emit: <T>(event: string, data?: T) =>
+				this.trigger<T>(id, event, data)
+		};
 	}
 
 	public emit<T>(event: string, data?: T) {

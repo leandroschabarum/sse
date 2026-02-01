@@ -1,5 +1,5 @@
-import { Response } from "./types";
-import { uuidv4 } from "../random";
+import { Response } from './types';
+import { uuidv4 } from '../random';
 
 export class Connection<TRes extends Response> {
 	private _id: string;
