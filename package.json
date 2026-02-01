@@ -29,12 +29,12 @@
 	],
 	"repository": {
 		"type": "git",
-		"url": "git+{{repo}}.git"
+		"url": "git+https://github.com/leandroschabarum/sse.git"
 	},
 	"bugs": {
-		"url": "{{repo}}/issues"
+		"url": "https://github.com/leandroschabarum/sse/issues"
 	},
-	"homepage": "{{repo}}#readme",
+	"homepage": "https://github.com/leandroschabarum/sse#readme",
 	"devDependencies": {
 		"@eslint/js": "^9.30.1",
 		"@tsconfig/recommended": "^1.0.10",
