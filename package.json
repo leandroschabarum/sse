@@ -1,10 +1,10 @@
 {
 	"name": "@lndr/sse",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"description": "Server-sent-events",
 	"type": "module",
 	"author": "Leandro Schabarum <leandroschabarum.98@gmail.com>",
-	"license": "UNLICENSED",
+	"license": "MIT",
 	"scripts": {
 		"build": "tsdown --tsconfig tsconfig.prod.json",
 		"build:watch": "tsdown --tsconfig tsconfig.prod.json --watch",
