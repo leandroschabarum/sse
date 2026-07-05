@@ -1,0 +1,78 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  check-token:
+    name: Check NPM token
+    runs-on: ubuntu-latest
+    outputs:
+      has-token: ${{ steps.status.outputs.defined }}
+    steps:
+      - id: status
+        env:
+          TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "defined=true" >> $GITHUB_OUTPUT
+          else
+            echo "defined=false" >> $GITHUB_OUTPUT
+          fi
+  build-and-publish:
+    name: Publish version
+    needs: check-token
+    if: needs.check-token.outputs.has-token == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+
+      - name: Extract version
+        id: extract
+        run: |
+          TAG=${{ inputs.version || github.ref_name }}
+          VERSION=${TAG#v}
+          VERSION_EXTRAS=$([[ "$VERSION" == *-* ]] && echo ${VERSION#*-} || true)
+          VERSION_TAG=${VERSION_EXTRAS%%.*}
+          VERSION_REVISION=${VERSION_EXTRAS#*.}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version_tag=$VERSION_TAG" >> $GITHUB_OUTPUT
+          echo "version_revision=$VERSION_REVISION" >> $GITHUB_OUTPUT
+
+      - name: Update package version
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: npm version $VERSION --no-git-tag-version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build project
+        run: npm run build
+
+      - name: Publish release
+        env:
+          DIST_TAG: ${{ steps.extract.outputs.version_tag || 'latest' }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --tag $DIST_TAG --access public --provenance
