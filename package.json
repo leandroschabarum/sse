@@ -1,6 +1,6 @@
 {
 	"name": "@lndr/sse",
-	"version": "1.0.2",
+	"version": "1.0.3",
 	"description": "Server-sent-events",
 	"type": "module",
 	"author": "Leandro Schabarum <leandroschabarum.98@gmail.com>",
