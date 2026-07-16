@@ -7,6 +7,7 @@ jest.mock('../random', () => ({
 
 const createMockResponse = (): jest.Mocked<Response> => ({
 	setHeader: jest.fn(),
+	flushHeaders: jest.fn(),
 	write: jest.fn<boolean, [string]>(() => true),
 	once: jest.fn(),
 	end: jest.fn()
@@ -37,7 +38,7 @@ describe('Connection', () => {
 		it('should set SSE headers on initialization', () => {
 			new TestableConnection(mockResponse, 'test-id');
 
-			expect(mockResponse.setHeader).toHaveBeenCalledTimes(3);
+			expect(mockResponse.setHeader).toHaveBeenCalledTimes(4);
 			expect(mockResponse.setHeader).toHaveBeenCalledWith(
 				'Content-Type',
 				'text/event-stream'
@@ -50,6 +51,30 @@ describe('Connection', () => {
 				'Connection',
 				'keep-alive'
 			);
+		});
+
+		it('should disable proxy buffering', () => {
+			new TestableConnection(mockResponse, 'test-id');
+
+			expect(mockResponse.setHeader).toHaveBeenCalledWith(
+				'X-Accel-Buffering',
+				'no'
+			);
+		});
+
+		it('should flush headers so the stream opens immediately', () => {
+			new TestableConnection(mockResponse, 'test-id');
+
+			expect(mockResponse.flushHeaders).toHaveBeenCalledTimes(1);
+		});
+
+		it('should tolerate a response without flushHeaders', () => {
+			const withoutFlush: Response = { ...mockResponse };
+			delete withoutFlush.flushHeaders;
+
+			expect(
+				() => new TestableConnection(withoutFlush, 'test-id')
+			).not.toThrow();
 		});
 
 		it('should accept an optional id parameter', () => {

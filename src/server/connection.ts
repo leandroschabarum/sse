@@ -52,6 +52,8 @@ export class Connection<TRes extends Response> {
 		this.channel.setHeader('Content-Type', 'text/event-stream');
 		this.channel.setHeader('Cache-Control', 'no-cache');
 		this.channel.setHeader('Connection', 'keep-alive');
+		this.channel.setHeader('X-Accel-Buffering', 'no');
+		this.channel.flushHeaders?.();
 	}
 
 	public send<T>(event: string, data?: T): void {

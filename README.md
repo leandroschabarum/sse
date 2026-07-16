@@ -126,6 +126,9 @@ Hub.to('user-123').emit('private-message', { text: 'Hello!' });
 Hub.to('*').emit('announcement', { text: 'Welcome!' });
 ```
 
+`*` is reserved as the broadcast target, so it is rejected as a connection id:
+passing `'*'` (or a value that trims to it) to `Server.createConnection` throws.
+
 ### Connection
 
 Each connection automatically configures the required SSE headers:
@@ -133,6 +136,12 @@ Each connection automatically configures the required SSE headers:
 - `Content-Type: text/event-stream`
 - `Cache-Control: no-cache`
 - `Connection: keep-alive`
+- `X-Accel-Buffering: no` — disables proxy buffering (e.g. nginx) so events
+  reach the client as they are written instead of being held back
+
+Headers are flushed as soon as the connection is created (when the underlying
+response supports `flushHeaders()`), so the stream opens immediately rather than
+on the first event or heartbeat.
 
 ## Usage Examples
 
@@ -283,3 +292,17 @@ for that connection are **dropped** until the socket drains, instead of being
 buffered in memory. This bounds memory usage and prevents a single slow client
 from degrading the whole process. Delivery to other clients is unaffected, and
 the slow connection resumes receiving events once it catches up.
+
+## Delivery guarantees
+
+Delivery is **at-most-once, with no replay**. Events are written to whatever
+connections are open at emit time and are never persisted or queued:
+
+- Events emitted while a client is disconnected — including the brief window
+  during an automatic `EventSource` reconnect — are **lost**; they are not
+  redelivered when the client returns.
+- Frames dropped for a saturated client (see [Backpressure](#backpressure)) and
+  frames destined for a connection that is evicted or closed are gone; there is
+  no retransmission.
+- The `Last-Event-ID` reconnection header is **not** honored, so there is no
+  server-side resume from the last received event.

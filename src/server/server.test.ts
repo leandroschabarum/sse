@@ -10,6 +10,7 @@ const mockUuidv4 = uuidv4 as jest.Mock;
 
 const createMockResponse = (): jest.Mocked<Response> => ({
 	setHeader: jest.fn(),
+	flushHeaders: jest.fn(),
 	write: jest.fn<boolean, [string]>(() => true),
 	once: jest.fn(),
 	end: jest.fn()
@@ -148,6 +149,13 @@ describe('Server', () => {
 			expect(() => server.testResolveId('a'.repeat(257))).toThrow(
 				RangeError
 			);
+		});
+
+		it("should reject '*' since it is reserved for broadcast", () => {
+			const server = TestableServer.createTestInstance();
+
+			expect(() => server.testResolveId('*')).toThrow(RangeError);
+			expect(() => server.testResolveId('  *  ')).toThrow(RangeError);
 		});
 
 		it('should not derive the id from any request input', () => {

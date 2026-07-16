@@ -125,6 +125,12 @@ export class Server<TReq extends Request, TRes extends Response> {
 
 		if (!trimmed) return uuidv4();
 
+		if (trimmed === '*') {
+			throw new RangeError(
+				"connection id '*' is reserved for broadcast and cannot be used"
+			);
+		}
+
 		if (trimmed.length > MAX_CONNECTION_ID_LENGTH) {
 			throw new RangeError(
 				`connection id must be at most ${MAX_CONNECTION_ID_LENGTH} characters, received: ${trimmed.length}`
