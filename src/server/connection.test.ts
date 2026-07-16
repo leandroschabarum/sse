@@ -73,24 +73,18 @@ describe('Connection', () => {
 	});
 
 	describe('send', () => {
-		it('should write SSE formatted message with event and data', () => {
+		const frame = (event: string, dataJson: string) =>
+			`id: mock-uuid-1234\nevent: ${event}\ndata: ${dataJson}\n\n`;
+
+		it('should write SSE formatted message with event and data in a single write', () => {
 			const connection = new TestableConnection(mockResponse, 'test-id');
 			const testData = { message: 'Hello, World!' };
 
 			connection.send('test-event', testData);
 
-			expect(mockResponse.write).toHaveBeenCalledTimes(3);
-			expect(mockResponse.write).toHaveBeenNthCalledWith(
-				1,
-				'id: mock-uuid-1234\n'
-			);
-			expect(mockResponse.write).toHaveBeenNthCalledWith(
-				2,
-				'event: test-event\n'
-			);
-			expect(mockResponse.write).toHaveBeenNthCalledWith(
-				3,
-				`data: ${JSON.stringify(testData)}\n\n`
+			expect(mockResponse.write).toHaveBeenCalledTimes(1);
+			expect(mockResponse.write).toHaveBeenCalledWith(
+				frame('test-event', JSON.stringify(testData))
 			);
 		});
 
@@ -99,9 +93,8 @@ describe('Connection', () => {
 
 			connection.send('test-event');
 
-			expect(mockResponse.write).toHaveBeenNthCalledWith(
-				3,
-				'data: null\n\n'
+			expect(mockResponse.write).toHaveBeenCalledWith(
+				frame('test-event', 'null')
 			);
 		});
 
@@ -110,9 +103,8 @@ describe('Connection', () => {
 
 			connection.send('test-event', undefined);
 
-			expect(mockResponse.write).toHaveBeenNthCalledWith(
-				3,
-				'data: null\n\n'
+			expect(mockResponse.write).toHaveBeenCalledWith(
+				frame('test-event', 'null')
 			);
 		});
 
@@ -121,17 +113,17 @@ describe('Connection', () => {
 
 			connection.send('string-event', 'simple string');
 			expect(mockResponse.write).toHaveBeenLastCalledWith(
-				'data: "simple string"\n\n'
+				frame('string-event', '"simple string"')
 			);
 
-			jest.clearAllMocks();
 			connection.send('number-event', 42);
-			expect(mockResponse.write).toHaveBeenLastCalledWith('data: 42\n\n');
+			expect(mockResponse.write).toHaveBeenLastCalledWith(
+				frame('number-event', '42')
+			);
 
-			jest.clearAllMocks();
 			connection.send('boolean-event', true);
 			expect(mockResponse.write).toHaveBeenLastCalledWith(
-				'data: true\n\n'
+				frame('boolean-event', 'true')
 			);
 		});
 
@@ -142,7 +134,7 @@ describe('Connection', () => {
 			connection.send('array-event', arrayData);
 
 			expect(mockResponse.write).toHaveBeenLastCalledWith(
-				`data: ${JSON.stringify(arrayData)}\n\n`
+				frame('array-event', JSON.stringify(arrayData))
 			);
 		});
 
@@ -159,7 +151,7 @@ describe('Connection', () => {
 			connection.send('nested-event', nestedData);
 
 			expect(mockResponse.write).toHaveBeenLastCalledWith(
-				`data: ${JSON.stringify(nestedData)}\n\n`
+				frame('nested-event', JSON.stringify(nestedData))
 			);
 		});
 
@@ -169,7 +161,7 @@ describe('Connection', () => {
 			connection.send('null-event', null);
 
 			expect(mockResponse.write).toHaveBeenLastCalledWith(
-				'data: null\n\n'
+				frame('null-event', 'null')
 			);
 		});
 
@@ -185,7 +177,19 @@ describe('Connection', () => {
 			connection.send<CustomEvent>('typed-event', typedData);
 
 			expect(mockResponse.write).toHaveBeenLastCalledWith(
-				`data: ${JSON.stringify(typedData)}\n\n`
+				frame('typed-event', JSON.stringify(typedData))
+			);
+		});
+
+		it('should strip CR/LF from the event name to prevent SSE injection', () => {
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.send('evil\ndata: forged\nevent: hijack', {
+				ok: true
+			});
+
+			expect(mockResponse.write).toHaveBeenCalledWith(
+				frame('evildata: forgedevent: hijack', '{"ok":true}')
 			);
 		});
 	});

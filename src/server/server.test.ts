@@ -1,9 +1,12 @@
 import { Server } from './server';
 import { Request, Response } from './types';
+import { uuidv4 } from '../random';
 
 jest.mock('../random', () => ({
 	uuidv4: jest.fn(() => 'mock-uuid-1234')
 }));
+
+const mockUuidv4 = uuidv4 as jest.Mock;
 
 const createMockResponse = (): jest.Mocked<Response> => ({
 	setHeader: jest.fn(),
@@ -268,6 +271,9 @@ describe('Server', () => {
 	});
 
 	describe('broadcast', () => {
+		const frame = (event: string, dataJson: string) =>
+			`id: mock-uuid-1234\nevent: ${event}\ndata: ${dataJson}\n\n`;
+
 		it('should send event to all connections', () => {
 			const server = TestableServer.createTestInstance();
 			const responses = [
@@ -286,19 +292,46 @@ describe('Server', () => {
 			server.broadcast('test-event', { message: 'broadcast message' });
 
 			responses.forEach((response) => {
+				expect(response.write).toHaveBeenCalledTimes(1);
 				expect(response.write).toHaveBeenCalledWith(
-					'event: test-event\n'
-				);
-				expect(response.write).toHaveBeenCalledWith(
-					'data: {"message":"broadcast message"}\n\n'
+					frame('test-event', '{"message":"broadcast message"}')
 				);
 			});
+		});
+
+		it('should format the frame once and reuse it for every connection', () => {
+			const server = TestableServer.createTestInstance();
+			const responses = [
+				createMockResponse(),
+				createMockResponse(),
+				createMockResponse()
+			];
+
+			responses.forEach((response, index) => {
+				const request = createMockRequest({
+					'x-request-id': `reuse-conn-${index}`
+				});
+				server.createConnection(request, response);
+			});
+
+			mockUuidv4.mockClear();
+			server.broadcast('shared', { n: 1 });
+
+			expect(mockUuidv4).toHaveBeenCalledTimes(1);
+
+			const frames = responses.map(
+				(response) => response.write.mock.calls[0][0]
+			);
+			expect(new Set(frames).size).toBe(1);
 		});
 
 		it('should work with no connections', () => {
 			const server = TestableServer.createTestInstance();
 
 			expect(() => server.broadcast('test-event', {})).not.toThrow();
+			mockUuidv4.mockClear();
+			server.broadcast('test-event', {});
+			expect(mockUuidv4).not.toHaveBeenCalled();
 		});
 
 		it('should broadcast without data', () => {
@@ -312,9 +345,23 @@ describe('Server', () => {
 			server.broadcast('no-data-event');
 
 			expect(mockResponse.write).toHaveBeenCalledWith(
-				'event: no-data-event\n'
+				frame('no-data-event', 'null')
 			);
-			expect(mockResponse.write).toHaveBeenCalledWith('data: null\n\n');
+		});
+
+		it('should strip CR/LF from the event name to prevent SSE injection', () => {
+			const server = TestableServer.createTestInstance();
+			const mockRequest = createMockRequest({
+				'x-request-id': 'inject-broadcast'
+			});
+			const mockResponse = createMockResponse();
+
+			server.createConnection(mockRequest, mockResponse);
+			server.broadcast('evil\ndata: forged', { ok: true });
+
+			expect(mockResponse.write).toHaveBeenCalledWith(
+				frame('evildata: forged', '{"ok":true}')
+			);
 		});
 
 		it('should use generic type parameter for data', () => {
@@ -336,7 +383,7 @@ describe('Server', () => {
 			});
 
 			expect(mockResponse.write).toHaveBeenCalledWith(
-				'data: {"type":"test","count":5}\n\n'
+				frame('typed-event', '{"type":"test","count":5}')
 			);
 		});
 	});

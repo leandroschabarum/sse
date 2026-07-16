@@ -1,6 +1,18 @@
 import { Response } from './types';
 import { uuidv4 } from '../random';
 
+function sanitizeField(value: string): string {
+	return value.replace(/[\r\n]/g, '');
+}
+
+export function formatEvent<T>(id: string, event: string, data?: T): string {
+	return (
+		`id: ${id}\n` +
+		`event: ${sanitizeField(event)}\n` +
+		`data: ${JSON.stringify(data ?? null)}\n\n`
+	);
+}
+
 export class Connection<TRes extends Response> {
 	private _id: string;
 
@@ -27,8 +39,10 @@ export class Connection<TRes extends Response> {
 	}
 
 	public send<T>(event: string, data?: T): void {
-		this.channel.write(`id: ${uuidv4()}\n`);
-		this.channel.write(`event: ${event}\n`);
-		this.channel.write(`data: ${JSON.stringify(data ?? null)}\n\n`);
+		this.write(formatEvent(uuidv4(), event, data));
+	}
+
+	public write(frame: string): void {
+		this.channel.write(frame);
 	}
 }

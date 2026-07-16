@@ -1,5 +1,5 @@
 import { Request, Response } from './types';
-import { Connection } from './connection';
+import { Connection, formatEvent } from './connection';
 import { uuidv4 } from '../random';
 
 const HEADER_REQUEST_ID = 'x-request-id';
@@ -28,8 +28,12 @@ export class Server<TReq extends Request, TRes extends Response> {
 	}
 
 	public broadcast<T>(event: string, data?: T): void {
+		if (this.connections.size === 0) return;
+
+		const frame = formatEvent(uuidv4(), event, data);
+
 		for (const connection of this.connections.values()) {
-			connection.send<T>(event, data);
+			connection.write(frame);
 		}
 	}
 
