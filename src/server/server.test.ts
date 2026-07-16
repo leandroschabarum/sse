@@ -11,7 +11,8 @@ const mockUuidv4 = uuidv4 as jest.Mock;
 const createMockResponse = (): jest.Mocked<Response> => ({
 	setHeader: jest.fn(),
 	write: jest.fn<boolean, [string]>(() => true),
-	once: jest.fn()
+	once: jest.fn(),
+	end: jest.fn()
 });
 
 interface MockRequest extends Request {
@@ -61,6 +62,22 @@ class TestableServer extends Server<Request, Response> {
 		return this.maxConnections;
 	}
 
+	public getHeartbeatInterval() {
+		return this.heartbeatIntervalMs;
+	}
+
+	public getStalledTimeout() {
+		return this.stalledTimeoutMs;
+	}
+
+	public isHeartbeatRunning() {
+		return this.heartbeatTimer !== null;
+	}
+
+	public testSweep() {
+		return this.sweep();
+	}
+
 	public testResolveId(id?: string) {
 		return this.resolveId(id);
 	}
@@ -68,8 +85,14 @@ class TestableServer extends Server<Request, Response> {
 
 describe('Server', () => {
 	beforeEach(() => {
+		jest.useFakeTimers();
 		TestableServer.resetInstance();
 		jest.clearAllMocks();
+	});
+
+	afterEach(() => {
+		jest.clearAllTimers();
+		jest.useRealTimers();
 	});
 
 	describe('singleton pattern', () => {
@@ -110,6 +133,21 @@ describe('Server', () => {
 			const server = TestableServer.createTestInstance();
 
 			expect(server.testResolveId()).toBe('mock-uuid-1234');
+		});
+
+		it('should accept an id at the maximum allowed length', () => {
+			const server = TestableServer.createTestInstance();
+			const id = 'a'.repeat(256);
+
+			expect(server.testResolveId(id)).toBe(id);
+		});
+
+		it('should reject an id longer than the maximum allowed length', () => {
+			const server = TestableServer.createTestInstance();
+
+			expect(() => server.testResolveId('a'.repeat(257))).toThrow(
+				RangeError
+			);
 		});
 
 		it('should not derive the id from any request input', () => {
@@ -241,6 +279,35 @@ describe('Server', () => {
 		});
 	});
 
+	describe('duplicate id handling', () => {
+		it('should close the previous connection when an id is reused', () => {
+			const server = TestableServer.createTestInstance();
+			const first = createMockResponse();
+			const second = createMockResponse();
+
+			server.createConnection(createMockRequest(), first, 'dup');
+			server.createConnection(createMockRequest(), second, 'dup');
+
+			expect(first.end).toHaveBeenCalledTimes(1);
+			expect(second.end).not.toHaveBeenCalled();
+			expect(server.getConnectionsMap().size).toBe(1);
+		});
+
+		it('should not let a stale connection evict its replacement on close', () => {
+			const server = TestableServer.createTestInstance();
+			const firstReq = createMockRequest();
+			const secondReq = createMockRequest();
+
+			server.createConnection(firstReq, createMockResponse(), 'dup');
+			server.createConnection(secondReq, createMockResponse(), 'dup');
+
+			firstReq._triggerEvent('close');
+
+			expect(server.getConnectionsMap().has('dup')).toBe(true);
+			expect(server.getConnectionsMap().size).toBe(1);
+		});
+	});
+
 	describe('maxConnections', () => {
 		it('should default to a conservative cap when setMaxConnections is not called', () => {
 			const server = TestableServer.createTestInstance();
@@ -344,6 +411,191 @@ describe('Server', () => {
 			expect(server.getConnectionsMap().size).toBe(1);
 			expect(server.getConnectionsMap().has('conn-2')).toBe(true);
 		});
+	});
+
+	describe('heartbeat', () => {
+		let consoleError: jest.SpyInstance;
+
+		beforeEach(() => {
+			consoleError = jest
+				.spyOn(console, 'error')
+				.mockImplementation(() => {});
+		});
+
+		afterEach(() => {
+			consoleError.mockRestore();
+		});
+
+		it('should start when the first connection is added', () => {
+			const server = TestableServer.createTestInstance();
+			expect(server.isHeartbeatRunning()).toBe(false);
+
+			server.createConnection(
+				createMockRequest(),
+				createMockResponse(),
+				'c1'
+			);
+
+			expect(server.isHeartbeatRunning()).toBe(true);
+		});
+
+		it('should stop when the last connection closes', () => {
+			const server = TestableServer.createTestInstance();
+			const req = createMockRequest();
+
+			server.createConnection(req, createMockResponse(), 'c1');
+			expect(server.isHeartbeatRunning()).toBe(true);
+
+			req._triggerEvent('close');
+
+			expect(server.getConnectionsMap().size).toBe(0);
+			expect(server.isHeartbeatRunning()).toBe(false);
+		});
+
+		it('should ping every connection on each sweep interval', () => {
+			const server = TestableServer.createTestInstance();
+			const response = createMockResponse();
+
+			server.createConnection(createMockRequest(), response, 'c1');
+			response.write.mockClear();
+
+			jest.advanceTimersByTime(server.getHeartbeatInterval());
+
+			expect(response.write).toHaveBeenCalledWith(': ping\n\n');
+		});
+
+		it('should evict and close a connection whose ping throws', () => {
+			const server = TestableServer.createTestInstance();
+			const broken = createMockResponse();
+			broken.write.mockImplementation(() => {
+				throw new Error('socket destroyed');
+			});
+
+			server.createConnection(createMockRequest(), broken, 'broken');
+			server.testSweep();
+
+			expect(server.getConnectionsMap().has('broken')).toBe(false);
+			expect(broken.end).toHaveBeenCalledTimes(1);
+			expect(consoleError).toHaveBeenCalledWith(
+				'[sse] evicting connection broken:',
+				expect.any(Error)
+			);
+		});
+
+		it('should evict and close a connection stalled beyond the timeout', () => {
+			const server = TestableServer.createTestInstance();
+			server.setStalledTimeout(1000);
+
+			const slow = createMockResponse();
+			slow.write.mockReturnValue(false);
+			server.createConnection(createMockRequest(), slow, 'slow');
+
+			server.broadcast('evt', { n: 1 });
+			jest.advanceTimersByTime(1001);
+
+			server.testSweep();
+
+			expect(server.getConnectionsMap().has('slow')).toBe(false);
+			expect(slow.end).toHaveBeenCalledTimes(1);
+			expect(consoleError).toHaveBeenCalledWith(
+				'[sse] evicting connection slow:',
+				'stalled for at least 1000ms'
+			);
+		});
+
+		it('should keep a connection that recovers before the stalled timeout', () => {
+			const server = TestableServer.createTestInstance();
+			server.setStalledTimeout(1000);
+
+			const slow = createMockResponse();
+			slow.write.mockReturnValue(false);
+			server.createConnection(createMockRequest(), slow, 'slow');
+
+			server.broadcast('evt', { n: 1 });
+			jest.advanceTimersByTime(500);
+			server.testSweep();
+
+			expect(server.getConnectionsMap().has('slow')).toBe(true);
+			expect(slow.end).not.toHaveBeenCalled();
+		});
+
+		it('should stop when a sweep empties the pool', () => {
+			const server = TestableServer.createTestInstance();
+			const broken = createMockResponse();
+			broken.write.mockImplementation(() => {
+				throw new Error('socket destroyed');
+			});
+
+			server.createConnection(createMockRequest(), broken, 'broken');
+			expect(server.isHeartbeatRunning()).toBe(true);
+
+			server.testSweep();
+
+			expect(server.isHeartbeatRunning()).toBe(false);
+		});
+	});
+
+	describe('heartbeat configuration', () => {
+		it('should default the heartbeat interval and stalled timeout', () => {
+			const server = TestableServer.createTestInstance();
+
+			expect(server.getHeartbeatInterval()).toBe(15_000);
+			expect(server.getStalledTimeout()).toBe(30_000);
+		});
+
+		it('should update the heartbeat interval', () => {
+			const server = TestableServer.createTestInstance();
+
+			server.setHeartbeatInterval(5_000);
+
+			expect(server.getHeartbeatInterval()).toBe(5_000);
+		});
+
+		it('should apply a new interval to an already running heartbeat', () => {
+			const server = TestableServer.createTestInstance();
+			const response = createMockResponse();
+			server.createConnection(createMockRequest(), response, 'c1');
+
+			server.setHeartbeatInterval(1_000);
+			response.write.mockClear();
+
+			jest.advanceTimersByTime(1_000);
+
+			expect(response.write).toHaveBeenCalledWith(': ping\n\n');
+			expect(server.isHeartbeatRunning()).toBe(true);
+		});
+
+		it('should update the stalled timeout', () => {
+			const server = TestableServer.createTestInstance();
+
+			server.setStalledTimeout(2_000);
+
+			expect(server.getStalledTimeout()).toBe(2_000);
+		});
+
+		it.each([0, -1, 1.5, NaN, Infinity])(
+			'should reject invalid heartbeat interval: %s',
+			(value) => {
+				const server = TestableServer.createTestInstance();
+
+				expect(() => server.setHeartbeatInterval(value)).toThrow(
+					RangeError
+				);
+				expect(server.getHeartbeatInterval()).toBe(15_000);
+			}
+		);
+
+		it.each([0, -1, 1.5, NaN, Infinity])(
+			'should reject invalid stalled timeout: %s',
+			(value) => {
+				const server = TestableServer.createTestInstance();
+
+				expect(() => server.setStalledTimeout(value)).toThrow(
+					RangeError
+				);
+				expect(server.getStalledTimeout()).toBe(30_000);
+			}
+		);
 	});
 
 	describe('getConnection', () => {
@@ -531,6 +783,7 @@ describe('Server', () => {
 				server.broadcast('evt', { n: 1 });
 
 				expect(server.getConnectionsMap().has('broken')).toBe(false);
+				expect(broken.end).toHaveBeenCalledTimes(1);
 			});
 
 			it('should log the failure', () => {
@@ -546,9 +799,26 @@ describe('Server', () => {
 				server.broadcast('evt', { n: 1 });
 
 				expect(consoleError).toHaveBeenCalledWith(
-					'[sse] write failed for connection broken:',
+					'[sse] evicting connection broken:',
 					failure
 				);
+			});
+
+			it('should stop the heartbeat when a broadcast empties the pool', () => {
+				const server = TestableServer.createTestInstance();
+
+				const broken = createMockResponse();
+				broken.write.mockImplementation(() => {
+					throw new Error('socket destroyed');
+				});
+
+				server.createConnection(createMockRequest(), broken, 'broken');
+				expect(server.isHeartbeatRunning()).toBe(true);
+
+				server.broadcast('evt', { n: 1 });
+
+				expect(server.getConnectionsMap().size).toBe(0);
+				expect(server.isHeartbeatRunning()).toBe(false);
 			});
 		});
 

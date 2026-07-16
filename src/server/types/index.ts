@@ -2,6 +2,7 @@ export interface Response {
 	setHeader(name: string, value: string): void;
 	write(chunk: string): boolean;
 	once(event: string, listener: () => void): void;
+	end(): void;
 }
 
 export interface Request {

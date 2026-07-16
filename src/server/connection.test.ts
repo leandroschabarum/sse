@@ -8,7 +8,8 @@ jest.mock('../random', () => ({
 const createMockResponse = (): jest.Mocked<Response> => ({
 	setHeader: jest.fn(),
 	write: jest.fn<boolean, [string]>(() => true),
-	once: jest.fn()
+	once: jest.fn(),
+	end: jest.fn()
 });
 
 /**
@@ -251,6 +252,71 @@ describe('Connection', () => {
 			connection.write('id: x\nevent: y\ndata: null\n\n');
 
 			expect(mockResponse.write).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('ping', () => {
+		it('should write an SSE comment as a heartbeat', () => {
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.ping();
+
+			expect(mockResponse.write).toHaveBeenCalledWith(': ping\n\n');
+		});
+
+		it('should not send a heartbeat while saturated', () => {
+			mockResponse.write.mockReturnValue(false);
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.send('saturate', { n: 1 });
+			mockResponse.write.mockClear();
+
+			connection.ping();
+
+			expect(mockResponse.write).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('stalledFor', () => {
+		it('should report zero when the channel is not saturated', () => {
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			expect(connection.stalledFor(1000)).toBe(0);
+		});
+
+		it('should report elapsed time since the channel saturated', () => {
+			mockResponse.write.mockReturnValue(false);
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(1000);
+			connection.send('saturate', { n: 1 });
+			nowSpy.mockRestore();
+
+			expect(connection.stalledFor(1500)).toBe(500);
+		});
+
+		it('should reset to zero after the channel drains', () => {
+			let drain: (() => void) | undefined;
+			mockResponse.once.mockImplementation((event, listener) => {
+				if (event === 'drain') drain = listener;
+			});
+			mockResponse.write.mockReturnValue(false);
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.send('saturate', { n: 1 });
+			drain?.();
+
+			expect(connection.stalledFor(Number.MAX_SAFE_INTEGER)).toBe(0);
+		});
+	});
+
+	describe('close', () => {
+		it('should end the underlying channel', () => {
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.close();
+
+			expect(mockResponse.end).toHaveBeenCalledTimes(1);
 		});
 	});
 

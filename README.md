@@ -38,7 +38,6 @@ const server = http.createServer((req, res) => {
 server.listen(3000);
 ```
 
-
 ### Server
 
 The `Server` singleton manages all SSE connections.
@@ -82,6 +81,18 @@ Lowering the limit below the current pool size does not evict existing
 connections; it only prevents new ones from being added until the pool drains
 below the limit.
 
+#### `Server.setHeartbeatInterval(ms)` / `Server.setStalledTimeout(ms)`
+
+Tune the liveness sweep (see [Heartbeat & liveness](#heartbeat--liveness)).
+
+```typescript
+import { Server } from '@lndr/sse';
+
+Server.setHeartbeatInterval(10_000); // sweep every 10s (default 15s)
+Server.setStalledTimeout(60_000); // evict clients stalled > 60s (default 30s)
+```
+
+Both take a positive integer number of milliseconds. A new heartbeat interval is applied immediately if the sweep is already running.
 
 ### Hub
 
@@ -122,7 +133,6 @@ Each connection automatically configures the required SSE headers:
 - `Content-Type: text/event-stream`
 - `Cache-Control: no-cache`
 - `Connection: keep-alive`
-
 
 ## Usage Examples
 
@@ -247,6 +257,23 @@ are escaped automatically.
 - Connections are automatically tracked when created via `Server.createConnection()`
 - When a client disconnects, the connection is automatically removed from the pool
 - Connection IDs are supplied by the application (e.g. an authenticated user id) for targeted messaging; when omitted a random UUID is used
+- Reconnecting with an id that is already tracked closes the previous connection and takes over its slot, so a stale socket is never left behind
+
+## Heartbeat & liveness
+
+While any connections are open, the server runs a periodic sweep (every 15s by default) that:
+
+- **Pings** each connection with an SSE comment (`: ping`). This keeps proxies
+  and load balancers from closing an idle stream, and surfaces a dead socket —
+  a failed write drops that connection from the pool.
+- **Evicts** any connection that has stayed saturated (a client not draining its
+  socket; see [Backpressure](#backpressure)) longer than the stalled timeout
+  (30s by default), closing it so its socket is reclaimed instead of lingering
+  in the pool receiving nothing.
+
+The sweep starts on the first connection and stops when the pool is empty, and
+its timer never keeps the process alive on its own. Tune it with
+`Server.setHeartbeatInterval()` and `Server.setStalledTimeout()`.
 
 ## Backpressure
 
