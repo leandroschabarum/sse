@@ -6,5 +6,4 @@ export interface Response {
 
 export interface Request {
 	on(event: string, listener: () => void): this;
-	headers: { [key: string]: string | string[] | undefined };
 }

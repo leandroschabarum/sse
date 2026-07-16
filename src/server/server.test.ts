@@ -18,13 +18,10 @@ interface MockRequest extends Request {
 	_triggerEvent: (event: string) => void;
 }
 
-const createMockRequest = (
-	headers: Record<string, string> = {}
-): jest.Mocked<MockRequest> => {
+const createMockRequest = (): jest.Mocked<MockRequest> => {
 	const listeners: Record<string, Array<() => void>> = {};
 
 	const mockRequest: MockRequest = {
-		headers,
 		on: jest.fn(function (
 			this: MockRequest,
 			event: string,
@@ -64,8 +61,8 @@ class TestableServer extends Server<Request, Response> {
 		return this.maxConnections;
 	}
 
-	public testGenerateId(req: Request) {
-		return this.generateId(req);
+	public testResolveId(id?: string) {
+		return this.resolveId(id);
 	}
 }
 
@@ -90,62 +87,71 @@ describe('Server', () => {
 		});
 	});
 
-	describe('generateId', () => {
-		it('should use x-request-id header when provided', () => {
+	describe('resolveId', () => {
+		it('should use the id supplied by the application', () => {
 			const server = TestableServer.createTestInstance();
-			const mockRequest = createMockRequest({
-				'x-request-id': 'custom-request-id'
-			});
 
-			const id = server.testGenerateId(mockRequest);
-
-			expect(id).toBe('custom-request-id');
+			expect(server.testResolveId('user-123')).toBe('user-123');
 		});
 
-		it('should trim whitespace from x-request-id header', () => {
+		it('should trim whitespace from the supplied id', () => {
 			const server = TestableServer.createTestInstance();
-			const mockRequest = createMockRequest({
-				'x-request-id': '  custom-id-with-spaces  '
-			});
 
-			const id = server.testGenerateId(mockRequest);
-
-			expect(id).toBe('custom-id-with-spaces');
+			expect(server.testResolveId('  user-123  ')).toBe('user-123');
 		});
 
-		it('should generate UUID when x-request-id header is empty', () => {
+		it('should generate a UUID when the supplied id is empty or whitespace', () => {
 			const server = TestableServer.createTestInstance();
-			const mockRequest = createMockRequest({ 'x-request-id': '   ' });
 
-			const id = server.testGenerateId(mockRequest);
-
-			expect(id).toBe('mock-uuid-1234');
+			expect(server.testResolveId('   ')).toBe('mock-uuid-1234');
 		});
 
-		it('should generate UUID when x-request-id header is not present', () => {
+		it('should generate a UUID when no id is supplied', () => {
 			const server = TestableServer.createTestInstance();
-			const mockRequest = createMockRequest({});
 
-			const id = server.testGenerateId(mockRequest);
+			expect(server.testResolveId()).toBe('mock-uuid-1234');
+		});
 
-			expect(id).toBe('mock-uuid-1234');
+		it('should not derive the id from any request input', () => {
+			const server = TestableServer.createTestInstance();
+			const mockRequest = createMockRequest();
+			const mockResponse = createMockResponse();
+
+			// A connection created without an explicit id gets a random UUID,
+			// never a value taken from the request.
+			server.createConnection(mockRequest, mockResponse);
+
+			expect(server.getConnectionsMap().has('mock-uuid-1234')).toBe(true);
 		});
 	});
 
 	describe('createConnection', () => {
-		it('should create a new connection and store it', () => {
+		it('should create a new connection and store it under the supplied id', () => {
 			const server = TestableServer.createTestInstance();
-			const mockRequest = createMockRequest({
-				'x-request-id': 'test-connection-id'
-			});
+			const mockRequest = createMockRequest();
 			const mockResponse = createMockResponse();
 
-			server.createConnection(mockRequest, mockResponse);
+			server.createConnection(
+				mockRequest,
+				mockResponse,
+				'test-connection-id'
+			);
 
 			expect(server.getConnectionsMap().size).toBe(1);
 			expect(server.getConnectionsMap().has('test-connection-id')).toBe(
 				true
 			);
+		});
+
+		it('should fall back to a generated id when none is supplied', () => {
+			const server = TestableServer.createTestInstance();
+			const mockRequest = createMockRequest();
+			const mockResponse = createMockResponse();
+
+			server.createConnection(mockRequest, mockResponse);
+
+			expect(server.getConnectionsMap().size).toBe(1);
+			expect(server.getConnectionsMap().has('mock-uuid-1234')).toBe(true);
 		});
 
 		it('should set SSE headers on the response', () => {
@@ -171,12 +177,10 @@ describe('Server', () => {
 
 		it('should register close event listener on request', () => {
 			const server = TestableServer.createTestInstance();
-			const mockRequest = createMockRequest({
-				'x-request-id': 'close-test-id'
-			});
+			const mockRequest = createMockRequest();
 			const mockResponse = createMockResponse();
 
-			server.createConnection(mockRequest, mockResponse);
+			server.createConnection(mockRequest, mockResponse, 'close-test-id');
 
 			expect(mockRequest.on).toHaveBeenCalledWith(
 				'close',
@@ -186,67 +190,52 @@ describe('Server', () => {
 
 		it('should remove connection when request closes', () => {
 			const server = TestableServer.createTestInstance();
-			const mockRequest = createMockRequest({
-				'x-request-id': 'close-test-id'
-			});
+			const mockRequest = createMockRequest();
 			const mockResponse = createMockResponse();
 
-			let closeListener: (() => void) | undefined;
-
-			// Capture the close listener
-			mockRequest.on.mockImplementation(function (
-				this: MockRequest,
-				event: string,
-				listener: () => void
-			) {
-				if (event === 'close') {
-					closeListener = listener;
-				}
-
-				return this;
-			});
-
-			server.createConnection(mockRequest, mockResponse);
+			server.createConnection(mockRequest, mockResponse, 'close-test-id');
 			expect(server.getConnectionsMap().size).toBe(1);
 
 			// Simulate connection close
-			closeListener?.();
+			mockRequest._triggerEvent('close');
 			expect(server.getConnectionsMap().size).toBe(0);
 		});
 
 		it('should allow multiple connections', () => {
 			const server = TestableServer.createTestInstance();
 
-			const mockRequest1 = createMockRequest({
-				'x-request-id': 'conn-1'
-			});
-			const mockRequest2 = createMockRequest({
-				'x-request-id': 'conn-2'
-			});
-			const mockRequest3 = createMockRequest({
-				'x-request-id': 'conn-3'
-			});
-
-			server.createConnection(mockRequest1, createMockResponse());
-			server.createConnection(mockRequest2, createMockResponse());
-			server.createConnection(mockRequest3, createMockResponse());
+			server.createConnection(
+				createMockRequest(),
+				createMockResponse(),
+				'conn-1'
+			);
+			server.createConnection(
+				createMockRequest(),
+				createMockResponse(),
+				'conn-2'
+			);
+			server.createConnection(
+				createMockRequest(),
+				createMockResponse(),
+				'conn-3'
+			);
 
 			expect(server.getConnectionsMap().size).toBe(3);
 		});
 
 		it('should overwrite connection with same id', () => {
 			const server = TestableServer.createTestInstance();
-			const mockRequest1 = createMockRequest({
-				'x-request-id': 'same-id'
-			});
-			const mockRequest2 = createMockRequest({
-				'x-request-id': 'same-id'
-			});
-			const mockResponse1 = createMockResponse();
-			const mockResponse2 = createMockResponse();
 
-			server.createConnection(mockRequest1, mockResponse1);
-			server.createConnection(mockRequest2, mockResponse2);
+			server.createConnection(
+				createMockRequest(),
+				createMockResponse(),
+				'same-id'
+			);
+			server.createConnection(
+				createMockRequest(),
+				createMockResponse(),
+				'same-id'
+			);
 
 			expect(server.getConnectionsMap().size).toBe(1);
 		});
@@ -287,18 +276,21 @@ describe('Server', () => {
 			server.setMaxConnections(2);
 
 			server.createConnection(
-				createMockRequest({ 'x-request-id': 'conn-1' }),
-				createMockResponse()
+				createMockRequest(),
+				createMockResponse(),
+				'conn-1'
 			);
 			server.createConnection(
-				createMockRequest({ 'x-request-id': 'conn-2' }),
-				createMockResponse()
+				createMockRequest(),
+				createMockResponse(),
+				'conn-2'
 			);
 
 			const refusedResponse = createMockResponse();
 			server.createConnection(
-				createMockRequest({ 'x-request-id': 'conn-3' }),
-				refusedResponse
+				createMockRequest(),
+				refusedResponse,
+				'conn-3'
 			);
 
 			expect(server.getConnectionsMap().size).toBe(2);
@@ -317,14 +309,16 @@ describe('Server', () => {
 			server.setMaxConnections(1);
 
 			server.createConnection(
-				createMockRequest({ 'x-request-id': 'conn-1' }),
-				createMockResponse()
+				createMockRequest(),
+				createMockResponse(),
+				'conn-1'
 			);
 
 			const reconnectResponse = createMockResponse();
 			server.createConnection(
-				createMockRequest({ 'x-request-id': 'conn-1' }),
-				reconnectResponse
+				createMockRequest(),
+				reconnectResponse,
+				'conn-1'
 			);
 
 			expect(server.getConnectionsMap().size).toBe(1);
@@ -335,25 +329,16 @@ describe('Server', () => {
 			const server = TestableServer.createTestInstance();
 			server.setMaxConnections(1);
 
-			let closeListener: (() => void) | undefined;
-			const request1 = createMockRequest({ 'x-request-id': 'conn-1' });
-			request1.on.mockImplementation(function (
-				this: MockRequest,
-				event: string,
-				listener: () => void
-			) {
-				if (event === 'close') closeListener = listener;
-				return this;
-			});
-
-			server.createConnection(request1, createMockResponse());
+			const request1 = createMockRequest();
+			server.createConnection(request1, createMockResponse(), 'conn-1');
 			expect(server.getConnectionsMap().size).toBe(1);
 
 			// Freeing the slot should let a brand-new connection in.
-			closeListener?.();
+			request1._triggerEvent('close');
 			server.createConnection(
-				createMockRequest({ 'x-request-id': 'conn-2' }),
-				createMockResponse()
+				createMockRequest(),
+				createMockResponse(),
+				'conn-2'
 			);
 
 			expect(server.getConnectionsMap().size).toBe(1);
@@ -364,12 +349,10 @@ describe('Server', () => {
 	describe('getConnection', () => {
 		it('should return connection by id', () => {
 			const server = TestableServer.createTestInstance();
-			const mockRequest = createMockRequest({
-				'x-request-id': 'get-test-id'
-			});
+			const mockRequest = createMockRequest();
 			const mockResponse = createMockResponse();
 
-			server.createConnection(mockRequest, mockResponse);
+			server.createConnection(mockRequest, mockResponse, 'get-test-id');
 			const connection = server.getConnection('get-test-id');
 
 			expect(connection).toBeDefined();
@@ -397,10 +380,11 @@ describe('Server', () => {
 			];
 
 			responses.forEach((response, index) => {
-				const request = createMockRequest({
-					'x-request-id': `broadcast-conn-${index}`
-				});
-				server.createConnection(request, response);
+				server.createConnection(
+					createMockRequest(),
+					response,
+					`broadcast-conn-${index}`
+				);
 			});
 
 			server.broadcast('test-event', { message: 'broadcast message' });
@@ -422,10 +406,11 @@ describe('Server', () => {
 			];
 
 			responses.forEach((response, index) => {
-				const request = createMockRequest({
-					'x-request-id': `reuse-conn-${index}`
-				});
-				server.createConnection(request, response);
+				server.createConnection(
+					createMockRequest(),
+					response,
+					`reuse-conn-${index}`
+				);
 			});
 
 			mockUuidv4.mockClear();
@@ -450,12 +435,13 @@ describe('Server', () => {
 
 		it('should broadcast without data', () => {
 			const server = TestableServer.createTestInstance();
-			const mockRequest = createMockRequest({
-				'x-request-id': 'no-data-broadcast'
-			});
 			const mockResponse = createMockResponse();
 
-			server.createConnection(mockRequest, mockResponse);
+			server.createConnection(
+				createMockRequest(),
+				mockResponse,
+				'no-data-broadcast'
+			);
 			server.broadcast('no-data-event');
 
 			expect(mockResponse.write).toHaveBeenCalledWith(
@@ -465,12 +451,13 @@ describe('Server', () => {
 
 		it('should strip CR/LF from the event name to prevent SSE injection', () => {
 			const server = TestableServer.createTestInstance();
-			const mockRequest = createMockRequest({
-				'x-request-id': 'inject-broadcast'
-			});
 			const mockResponse = createMockResponse();
 
-			server.createConnection(mockRequest, mockResponse);
+			server.createConnection(
+				createMockRequest(),
+				mockResponse,
+				'inject-broadcast'
+			);
 			server.broadcast('evil\ndata: forged', { ok: true });
 
 			expect(mockResponse.write).toHaveBeenCalledWith(
@@ -485,14 +472,8 @@ describe('Server', () => {
 			slow.write.mockReturnValue(false);
 			const fast = createMockResponse();
 
-			server.createConnection(
-				createMockRequest({ 'x-request-id': 'slow' }),
-				slow
-			);
-			server.createConnection(
-				createMockRequest({ 'x-request-id': 'fast' }),
-				fast
-			);
+			server.createConnection(createMockRequest(), slow, 'slow');
+			server.createConnection(createMockRequest(), fast, 'fast');
 
 			server.broadcast('first', { n: 1 });
 			server.broadcast('second', { n: 2 });
@@ -523,13 +504,11 @@ describe('Server', () => {
 				});
 				const healthy = createMockResponse();
 
+				server.createConnection(createMockRequest(), broken, 'broken');
 				server.createConnection(
-					createMockRequest({ 'x-request-id': 'broken' }),
-					broken
-				);
-				server.createConnection(
-					createMockRequest({ 'x-request-id': 'healthy' }),
-					healthy
+					createMockRequest(),
+					healthy,
+					'healthy'
 				);
 
 				expect(() => server.broadcast('evt', { n: 1 })).not.toThrow();
@@ -546,10 +525,7 @@ describe('Server', () => {
 					throw new Error('socket destroyed');
 				});
 
-				server.createConnection(
-					createMockRequest({ 'x-request-id': 'broken' }),
-					broken
-				);
+				server.createConnection(createMockRequest(), broken, 'broken');
 				expect(server.getConnectionsMap().size).toBe(1);
 
 				server.broadcast('evt', { n: 1 });
@@ -566,10 +542,7 @@ describe('Server', () => {
 					throw failure;
 				});
 
-				server.createConnection(
-					createMockRequest({ 'x-request-id': 'broken' }),
-					broken
-				);
+				server.createConnection(createMockRequest(), broken, 'broken');
 				server.broadcast('evt', { n: 1 });
 
 				expect(consoleError).toHaveBeenCalledWith(
@@ -586,12 +559,13 @@ describe('Server', () => {
 			}
 
 			const server = TestableServer.createTestInstance();
-			const mockRequest = createMockRequest({
-				'x-request-id': 'typed-broadcast'
-			});
 			const mockResponse = createMockResponse();
 
-			server.createConnection(mockRequest, mockResponse);
+			server.createConnection(
+				createMockRequest(),
+				mockResponse,
+				'typed-broadcast'
+			);
 			server.broadcast<BroadcastPayload>('typed-event', {
 				type: 'test',
 				count: 5

@@ -43,20 +43,22 @@ server.listen(3000);
 
 The `Server` singleton manages all SSE connections.
 
-#### `Server.createConnection(req, res)`
+#### `Server.createConnection(req, res, id?)`
 
 Creates a new SSE connection from an HTTP request/response pair.
 
 ```typescript
 import { Server } from '@lndr/sse';
 
-// In your HTTP handler
-Server.createConnection(req, res);
+// In your HTTP handler — derive the id from your authenticated session/user
+Server.createConnection(req, res, req.user.id);
 ```
 
-The connection ID is automatically determined from:
+The connection `id` is the routing key used by targeted messaging
+(`Hub.to(id)`). It is taken **only** from the value you pass in; when omitted, a
+random UUID v4 is generated instead:
 
-1. The `x-request-id` header (if present)
+1. The `id` argument supplied by your application (if a non-empty string)
 2. A randomly generated UUID v4 (fallback)
 
 #### `Server.setMaxConnections(max)`
@@ -152,10 +154,9 @@ app.listen(3000);
 ```typescript
 import { Server, Hub } from '@lndr/sse';
 
-// Client connects with a custom request ID
-// GET /events with header: x-request-id: user-456
+// Bind the connection to the authenticated user id (set by your auth middleware)
 app.get('/events', (req, res) => {
-	Server.createConnection(req, res);
+	Server.createConnection(req, res, req.user.id);
 });
 
 // Send a message to a specific user
@@ -245,7 +246,7 @@ are escaped automatically.
 
 - Connections are automatically tracked when created via `Server.createConnection()`
 - When a client disconnects, the connection is automatically removed from the pool
-- Connection IDs can be specified via the `x-request-id` header for targeted messaging
+- Connection IDs are supplied by the application (e.g. an authenticated user id) for targeted messaging; when omitted a random UUID is used
 
 ## Backpressure
 

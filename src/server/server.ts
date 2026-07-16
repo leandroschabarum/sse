@@ -2,7 +2,6 @@ import { Request, Response } from './types';
 import { Connection, formatEvent } from './connection';
 import { uuidv4 } from '../random';
 
-const HEADER_REQUEST_ID = 'x-request-id';
 const DEFAULT_MAX_CONNECTIONS = 1_000;
 
 export class Server<TReq extends Request, TRes extends Response> {
@@ -34,10 +33,8 @@ export class Server<TReq extends Request, TRes extends Response> {
 		this.maxConnections = max;
 	}
 
-	protected generateId(req: TReq): string {
-		const data = req.headers[HEADER_REQUEST_ID];
-
-		return (typeof data === 'string' && data?.trim()) || uuidv4();
+	protected resolveId(id?: string): string {
+		return (typeof id === 'string' && id.trim()) || uuidv4();
 	}
 
 	public broadcast<T>(event: string, data?: T): void {
@@ -55,8 +52,8 @@ export class Server<TReq extends Request, TRes extends Response> {
 		}
 	}
 
-	public createConnection(req: TReq, res: TRes): void {
-		const id = this.generateId(req);
+	public createConnection(req: TReq, res: TRes, id?: string): void {
+		id = this.resolveId(id);
 
 		if (
 			this.connections.size >= this.maxConnections &&
