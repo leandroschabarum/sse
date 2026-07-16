@@ -364,6 +364,7 @@ describe('Server', () => {
 			expect(server.getConnectionsMap().has('conn-3')).toBe(false);
 			// A refused connection is never wired up as an SSE stream.
 			expect(refusedResponse.setHeader).not.toHaveBeenCalled();
+			expect(refusedResponse.end).toHaveBeenCalledTimes(1);
 			expect(consoleError).toHaveBeenCalledWith(
 				'[sse] connection refused: reached maxConnections limit of 2'
 			);

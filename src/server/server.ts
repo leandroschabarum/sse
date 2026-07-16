@@ -160,6 +160,8 @@ export class Server<TReq extends Request, TRes extends Response> {
 				`[sse] connection refused: reached maxConnections limit of ${this.maxConnections}`
 			);
 
+			res.end();
+
 			return;
 		}
 
