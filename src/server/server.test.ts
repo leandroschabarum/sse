@@ -60,6 +60,10 @@ class TestableServer extends Server<Request, Response> {
 		return this.connections;
 	}
 
+	public getMaxConnections() {
+		return this.maxConnections;
+	}
+
 	public testGenerateId(req: Request) {
 		return this.generateId(req);
 	}
@@ -245,6 +249,115 @@ describe('Server', () => {
 			server.createConnection(mockRequest2, mockResponse2);
 
 			expect(server.getConnectionsMap().size).toBe(1);
+		});
+	});
+
+	describe('maxConnections', () => {
+		it('should default to a conservative cap when setMaxConnections is not called', () => {
+			const server = TestableServer.createTestInstance();
+
+			expect(server.getMaxConnections()).toBe(1_000);
+		});
+
+		it('should update the cap when setMaxConnections is called', () => {
+			const server = TestableServer.createTestInstance();
+
+			server.setMaxConnections(5);
+
+			expect(server.getMaxConnections()).toBe(5);
+		});
+
+		it.each([0, -1, 1.5, NaN, Infinity])(
+			'should reject invalid cap value: %s',
+			(value) => {
+				const server = TestableServer.createTestInstance();
+
+				expect(() => server.setMaxConnections(value)).toThrow(
+					RangeError
+				);
+				expect(server.getMaxConnections()).toBe(1_000);
+			}
+		);
+
+		it('should refuse new connections once the cap is reached', () => {
+			const consoleError = jest
+				.spyOn(console, 'error')
+				.mockImplementation(() => {});
+			const server = TestableServer.createTestInstance();
+			server.setMaxConnections(2);
+
+			server.createConnection(
+				createMockRequest({ 'x-request-id': 'conn-1' }),
+				createMockResponse()
+			);
+			server.createConnection(
+				createMockRequest({ 'x-request-id': 'conn-2' }),
+				createMockResponse()
+			);
+
+			const refusedResponse = createMockResponse();
+			server.createConnection(
+				createMockRequest({ 'x-request-id': 'conn-3' }),
+				refusedResponse
+			);
+
+			expect(server.getConnectionsMap().size).toBe(2);
+			expect(server.getConnectionsMap().has('conn-3')).toBe(false);
+			// A refused connection is never wired up as an SSE stream.
+			expect(refusedResponse.setHeader).not.toHaveBeenCalled();
+			expect(consoleError).toHaveBeenCalledWith(
+				'[sse] connection refused: reached maxConnections limit of 2'
+			);
+
+			consoleError.mockRestore();
+		});
+
+		it('should still accept a reconnection reusing a tracked id at the cap', () => {
+			const server = TestableServer.createTestInstance();
+			server.setMaxConnections(1);
+
+			server.createConnection(
+				createMockRequest({ 'x-request-id': 'conn-1' }),
+				createMockResponse()
+			);
+
+			const reconnectResponse = createMockResponse();
+			server.createConnection(
+				createMockRequest({ 'x-request-id': 'conn-1' }),
+				reconnectResponse
+			);
+
+			expect(server.getConnectionsMap().size).toBe(1);
+			expect(reconnectResponse.setHeader).toHaveBeenCalled();
+		});
+
+		it('should free capacity when a connection closes', () => {
+			const server = TestableServer.createTestInstance();
+			server.setMaxConnections(1);
+
+			let closeListener: (() => void) | undefined;
+			const request1 = createMockRequest({ 'x-request-id': 'conn-1' });
+			request1.on.mockImplementation(function (
+				this: MockRequest,
+				event: string,
+				listener: () => void
+			) {
+				if (event === 'close') closeListener = listener;
+				return this;
+			});
+
+			server.createConnection(request1, createMockResponse());
+			expect(server.getConnectionsMap().size).toBe(1);
+
+			// Freeing the slot should let a brand-new connection in.
+			closeListener?.();
+			server.createConnection(
+				createMockRequest({ 'x-request-id': 'conn-2' }),
+				createMockResponse()
+			);
+
+			expect(server.getConnectionsMap().size).toBe(1);
+			expect(server.getConnectionsMap().has('conn-2')).toBe(true);
 		});
 	});
 

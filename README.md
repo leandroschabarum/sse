@@ -59,6 +59,27 @@ The connection ID is automatically determined from:
 1. The `x-request-id` header (if present)
 2. A randomly generated UUID v4 (fallback)
 
+#### `Server.setMaxConnections(max)`
+
+Sets the maximum number of simultaneously tracked connections. When the pool is
+full, further **new** connections are refused; a reconnection that reuses an
+already-tracked id is still accepted.
+
+```typescript
+import { Server } from '@lndr/sse';
+
+Server.setMaxConnections(5000);
+```
+
+If `setMaxConnections` is never called, a conservative default cap of `1000`
+applies — it sits just under the common `ulimit -n` of 1024 so an untuned deploy
+refuses connections gracefully before the OS starts failing with `EMFILE`.
+Deployments that raise their file-descriptor limit should set their own cap to
+match.
+Lowering the limit below the current pool size does not evict existing
+connections; it only prevents new ones from being added until the pool drains
+below the limit.
+
 
 ### Hub
 

@@ -3,6 +3,7 @@ import { Connection, formatEvent } from './connection';
 import { uuidv4 } from '../random';
 
 const HEADER_REQUEST_ID = 'x-request-id';
+const DEFAULT_MAX_CONNECTIONS = 1_000;
 
 export class Server<TReq extends Request, TRes extends Response> {
 	private static _instance: Server<Request, Response>;
@@ -17,8 +18,20 @@ export class Server<TReq extends Request, TRes extends Response> {
 
 	protected connections: Map<string, Connection<TRes>>;
 
+	protected maxConnections: number = DEFAULT_MAX_CONNECTIONS;
+
 	protected constructor() {
 		this.connections = new Map<string, Connection<TRes>>();
+	}
+
+	public setMaxConnections(max: number): void {
+		if (!Number.isInteger(max) || max <= 0) {
+			throw new RangeError(
+				`maxConnections must be a positive integer, received: ${max}`
+			);
+		}
+
+		this.maxConnections = max;
 	}
 
 	protected generateId(req: TReq): string {
@@ -44,6 +57,18 @@ export class Server<TReq extends Request, TRes extends Response> {
 
 	public createConnection(req: TReq, res: TRes): void {
 		const id = this.generateId(req);
+
+		if (
+			this.connections.size >= this.maxConnections &&
+			!this.connections.has(id)
+		) {
+			console.error(
+				`[sse] connection refused: reached maxConnections limit of ${this.maxConnections}`
+			);
+
+			return;
+		}
+
 		const connection = new Connection<TRes>(res, id);
 
 		req.on('close', () => this.connections.delete(id));
