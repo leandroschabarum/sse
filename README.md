@@ -74,6 +74,12 @@ import { Hub } from '@lndr/sse';
 Hub.emit('update', { status: 'complete' });
 ```
 
+The payload is serialized once and the resulting frame is reused for every
+connection, so a broadcast performs a single `JSON.stringify` and a single write
+per client regardless of how many clients are connected. All recipients of a
+given broadcast therefore share the same event `id`, since they receive the same
+logical event.
+
 #### `Hub.to(id).emit(event, data?)`
 
 Sends an event to a specific connection.
@@ -208,6 +214,11 @@ event: notification
 data: {"message":"Hello, World!"}
 
 ```
+
+Because SSE is a line-oriented protocol, CR/LF characters are stripped from the
+event name before it is written, preventing event-stream injection through a
+crafted event name. Payloads are JSON-encoded, so control characters in `data`
+are escaped automatically.
 
 ## Connection Lifecycle
 
