@@ -32,8 +32,13 @@ export class Server<TReq extends Request, TRes extends Response> {
 
 		const frame = formatEvent(uuidv4(), event, data);
 
-		for (const connection of this.connections.values()) {
-			connection.write(frame);
+		for (const [id, connection] of this.connections) {
+			try {
+				connection.write(frame);
+			} catch (e) {
+				this.connections.delete(id);
+				console.error(`[sse] write failed for connection ${id}:`, e);
+			}
 		}
 	}
 

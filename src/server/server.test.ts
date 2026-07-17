@@ -388,6 +388,84 @@ describe('Server', () => {
 			expect(fast.write).toHaveBeenCalledTimes(2);
 		});
 
+		describe('error isolation', () => {
+			let consoleError: jest.SpyInstance;
+
+			beforeEach(() => {
+				consoleError = jest
+					.spyOn(console, 'error')
+					.mockImplementation(() => {});
+			});
+
+			afterEach(() => {
+				consoleError.mockRestore();
+			});
+
+			it('should keep delivering to other clients when one write throws', () => {
+				const server = TestableServer.createTestInstance();
+
+				const broken = createMockResponse();
+				broken.write.mockImplementation(() => {
+					throw new Error('socket destroyed');
+				});
+				const healthy = createMockResponse();
+
+				server.createConnection(
+					createMockRequest({ 'x-request-id': 'broken' }),
+					broken
+				);
+				server.createConnection(
+					createMockRequest({ 'x-request-id': 'healthy' }),
+					healthy
+				);
+
+				expect(() => server.broadcast('evt', { n: 1 })).not.toThrow();
+				expect(healthy.write).toHaveBeenCalledWith(
+					frame('evt', '{"n":1}')
+				);
+			});
+
+			it('should drop a connection whose write throws', () => {
+				const server = TestableServer.createTestInstance();
+
+				const broken = createMockResponse();
+				broken.write.mockImplementation(() => {
+					throw new Error('socket destroyed');
+				});
+
+				server.createConnection(
+					createMockRequest({ 'x-request-id': 'broken' }),
+					broken
+				);
+				expect(server.getConnectionsMap().size).toBe(1);
+
+				server.broadcast('evt', { n: 1 });
+
+				expect(server.getConnectionsMap().has('broken')).toBe(false);
+			});
+
+			it('should log the failure', () => {
+				const server = TestableServer.createTestInstance();
+
+				const broken = createMockResponse();
+				const failure = new Error('socket destroyed');
+				broken.write.mockImplementation(() => {
+					throw failure;
+				});
+
+				server.createConnection(
+					createMockRequest({ 'x-request-id': 'broken' }),
+					broken
+				);
+				server.broadcast('evt', { n: 1 });
+
+				expect(consoleError).toHaveBeenCalledWith(
+					'[sse] write failed for connection broken:',
+					failure
+				);
+			});
+		});
+
 		it('should use generic type parameter for data', () => {
 			interface BroadcastPayload {
 				type: string;
