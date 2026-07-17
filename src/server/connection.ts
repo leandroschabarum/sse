@@ -20,18 +20,8 @@ export class Connection<TRes extends Response> {
 
 	private _channel: TRes;
 
-	/**
-	 * True while the underlying socket buffer is above its high-water mark.
-	 * Frames written while saturated are dropped for this connection until the
-	 * channel drains, bounding memory usage against slow or stalled clients.
-	 */
 	private saturated = false;
 
-	/**
-	 * Timestamp (ms) when the channel last became saturated, or null while it is
-	 * draining normally. Lets the server evict a client that has been stalled for
-	 * too long instead of holding its socket open forever.
-	 */
 	private saturatedSince: number | null = null;
 
 	protected get id() {
@@ -73,8 +63,6 @@ export class Connection<TRes extends Response> {
 	}
 
 	public write(frame: string): void {
-		// A saturated socket keeps buffering in memory even though write() has
-		// signalled backpressure, so drop the frame rather than pile onto it.
 		if (this.saturated) return;
 
 		if (this.channel.write(frame) === false) {
