@@ -18,6 +18,13 @@ export class Connection<TRes extends Response> {
 
 	private _channel: TRes;
 
+	/**
+	 * True while the underlying socket buffer is above its high-water mark.
+	 * Frames written while saturated are dropped for this connection until the
+	 * channel drains, bounding memory usage against slow or stalled clients.
+	 */
+	private saturated = false;
+
 	protected get id() {
 		return this._id;
 	}
@@ -43,6 +50,15 @@ export class Connection<TRes extends Response> {
 	}
 
 	public write(frame: string): void {
-		this.channel.write(frame);
+		// A saturated socket keeps buffering in memory even though write() has
+		// signalled backpressure, so drop the frame rather than pile onto it.
+		if (this.saturated) return;
+
+		if (this.channel.write(frame) === false) {
+			this.saturated = true;
+			this.channel.once('drain', () => {
+				this.saturated = false;
+			});
+		}
 	}
 }

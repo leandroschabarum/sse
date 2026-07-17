@@ -10,7 +10,8 @@ const mockUuidv4 = uuidv4 as jest.Mock;
 
 const createMockResponse = (): jest.Mocked<Response> => ({
 	setHeader: jest.fn(),
-	write: jest.fn()
+	write: jest.fn<boolean, [string]>(() => true),
+	once: jest.fn()
 });
 
 interface MockRequest extends Request {
@@ -362,6 +363,29 @@ describe('Server', () => {
 			expect(mockResponse.write).toHaveBeenCalledWith(
 				frame('evildata: forged', '{"ok":true}')
 			);
+		});
+
+		it('should keep delivering to healthy clients when one is saturated', () => {
+			const server = TestableServer.createTestInstance();
+
+			const slow = createMockResponse();
+			slow.write.mockReturnValue(false);
+			const fast = createMockResponse();
+
+			server.createConnection(
+				createMockRequest({ 'x-request-id': 'slow' }),
+				slow
+			);
+			server.createConnection(
+				createMockRequest({ 'x-request-id': 'fast' }),
+				fast
+			);
+
+			server.broadcast('first', { n: 1 });
+			server.broadcast('second', { n: 2 });
+
+			expect(slow.write).toHaveBeenCalledTimes(1);
+			expect(fast.write).toHaveBeenCalledTimes(2);
 		});
 
 		it('should use generic type parameter for data', () => {

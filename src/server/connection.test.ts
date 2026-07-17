@@ -7,7 +7,8 @@ jest.mock('../random', () => ({
 
 const createMockResponse = (): jest.Mocked<Response> => ({
 	setHeader: jest.fn(),
-	write: jest.fn()
+	write: jest.fn<boolean, [string]>(() => true),
+	once: jest.fn()
 });
 
 /**
@@ -191,6 +192,65 @@ describe('Connection', () => {
 			expect(mockResponse.write).toHaveBeenCalledWith(
 				frame('evildata: forgedevent: hijack', '{"ok":true}')
 			);
+		});
+	});
+
+	describe('backpressure', () => {
+		it('should drop frames while the channel is saturated', () => {
+			mockResponse.write.mockReturnValue(false);
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.send('first', { n: 1 });
+			connection.send('second', { n: 2 });
+			connection.send('third', { n: 3 });
+
+			expect(mockResponse.write).toHaveBeenCalledTimes(1);
+		});
+
+		it('should subscribe to drain once when it becomes saturated', () => {
+			mockResponse.write.mockReturnValue(false);
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.send('first', { n: 1 });
+			connection.send('second', { n: 2 });
+
+			expect(mockResponse.once).toHaveBeenCalledTimes(1);
+			expect(mockResponse.once).toHaveBeenCalledWith(
+				'drain',
+				expect.any(Function)
+			);
+		});
+
+		it('should resume writing after the channel drains', () => {
+			let drain: (() => void) | undefined;
+			mockResponse.once.mockImplementation((event, listener) => {
+				if (event === 'drain') drain = listener;
+			});
+			mockResponse.write.mockReturnValue(false);
+
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.send('first', { n: 1 });
+			connection.send('dropped', { n: 2 });
+			expect(mockResponse.write).toHaveBeenCalledTimes(1);
+
+			mockResponse.write.mockReturnValue(true);
+			drain?.();
+
+			connection.send('after-drain', { n: 3 });
+			expect(mockResponse.write).toHaveBeenCalledTimes(2);
+		});
+
+		it('should not write when already saturated', () => {
+			mockResponse.write.mockReturnValue(false);
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.send('first', { n: 1 });
+			mockResponse.write.mockClear();
+
+			connection.write('id: x\nevent: y\ndata: null\n\n');
+
+			expect(mockResponse.write).not.toHaveBeenCalled();
 		});
 	});
 

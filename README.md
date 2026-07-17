@@ -225,3 +225,12 @@ are escaped automatically.
 - Connections are automatically tracked when created via `Server.createConnection()`
 - When a client disconnects, the connection is automatically removed from the pool
 - Connection IDs can be specified via the `x-request-id` header for targeted messaging
+
+## Backpressure
+
+Each connection honors the underlying socket's backpressure signal. When a write
+reports that the socket buffer is full (a slow or stalled client), further frames
+for that connection are **dropped** until the socket drains, instead of being
+buffered in memory. This bounds memory usage and prevents a single slow client
+from degrading the whole process. Delivery to other clients is unaffected, and
+the slow connection resumes receiving events once it catches up.
