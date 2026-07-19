@@ -7,7 +7,10 @@ jest.mock('../random', () => ({
 
 const createMockResponse = (): jest.Mocked<Response> => ({
 	setHeader: jest.fn(),
-	write: jest.fn()
+	flushHeaders: jest.fn(),
+	write: jest.fn<boolean, [string]>(() => true),
+	once: jest.fn(),
+	end: jest.fn()
 });
 
 /**
@@ -35,7 +38,7 @@ describe('Connection', () => {
 		it('should set SSE headers on initialization', () => {
 			new TestableConnection(mockResponse, 'test-id');
 
-			expect(mockResponse.setHeader).toHaveBeenCalledTimes(3);
+			expect(mockResponse.setHeader).toHaveBeenCalledTimes(4);
 			expect(mockResponse.setHeader).toHaveBeenCalledWith(
 				'Content-Type',
 				'text/event-stream'
@@ -48,6 +51,30 @@ describe('Connection', () => {
 				'Connection',
 				'keep-alive'
 			);
+		});
+
+		it('should disable proxy buffering', () => {
+			new TestableConnection(mockResponse, 'test-id');
+
+			expect(mockResponse.setHeader).toHaveBeenCalledWith(
+				'X-Accel-Buffering',
+				'no'
+			);
+		});
+
+		it('should flush headers so the stream opens immediately', () => {
+			new TestableConnection(mockResponse, 'test-id');
+
+			expect(mockResponse.flushHeaders).toHaveBeenCalledTimes(1);
+		});
+
+		it('should tolerate a response without flushHeaders', () => {
+			const withoutFlush: Response = { ...mockResponse };
+			delete withoutFlush.flushHeaders;
+
+			expect(
+				() => new TestableConnection(withoutFlush, 'test-id')
+			).not.toThrow();
 		});
 
 		it('should accept an optional id parameter', () => {
@@ -73,24 +100,18 @@ describe('Connection', () => {
 	});
 
 	describe('send', () => {
-		it('should write SSE formatted message with event and data', () => {
+		const frame = (event: string, dataJson: string) =>
+			`id: mock-uuid-1234\nevent: ${event}\ndata: ${dataJson}\n\n`;
+
+		it('should write SSE formatted message with event and data in a single write', () => {
 			const connection = new TestableConnection(mockResponse, 'test-id');
 			const testData = { message: 'Hello, World!' };
 
 			connection.send('test-event', testData);
 
-			expect(mockResponse.write).toHaveBeenCalledTimes(3);
-			expect(mockResponse.write).toHaveBeenNthCalledWith(
-				1,
-				'id: mock-uuid-1234\n'
-			);
-			expect(mockResponse.write).toHaveBeenNthCalledWith(
-				2,
-				'event: test-event\n'
-			);
-			expect(mockResponse.write).toHaveBeenNthCalledWith(
-				3,
-				`data: ${JSON.stringify(testData)}\n\n`
+			expect(mockResponse.write).toHaveBeenCalledTimes(1);
+			expect(mockResponse.write).toHaveBeenCalledWith(
+				frame('test-event', JSON.stringify(testData))
 			);
 		});
 
@@ -99,9 +120,8 @@ describe('Connection', () => {
 
 			connection.send('test-event');
 
-			expect(mockResponse.write).toHaveBeenNthCalledWith(
-				3,
-				'data: null\n\n'
+			expect(mockResponse.write).toHaveBeenCalledWith(
+				frame('test-event', 'null')
 			);
 		});
 
@@ -110,9 +130,8 @@ describe('Connection', () => {
 
 			connection.send('test-event', undefined);
 
-			expect(mockResponse.write).toHaveBeenNthCalledWith(
-				3,
-				'data: null\n\n'
+			expect(mockResponse.write).toHaveBeenCalledWith(
+				frame('test-event', 'null')
 			);
 		});
 
@@ -121,17 +140,17 @@ describe('Connection', () => {
 
 			connection.send('string-event', 'simple string');
 			expect(mockResponse.write).toHaveBeenLastCalledWith(
-				'data: "simple string"\n\n'
+				frame('string-event', '"simple string"')
 			);
 
-			jest.clearAllMocks();
 			connection.send('number-event', 42);
-			expect(mockResponse.write).toHaveBeenLastCalledWith('data: 42\n\n');
+			expect(mockResponse.write).toHaveBeenLastCalledWith(
+				frame('number-event', '42')
+			);
 
-			jest.clearAllMocks();
 			connection.send('boolean-event', true);
 			expect(mockResponse.write).toHaveBeenLastCalledWith(
-				'data: true\n\n'
+				frame('boolean-event', 'true')
 			);
 		});
 
@@ -142,7 +161,7 @@ describe('Connection', () => {
 			connection.send('array-event', arrayData);
 
 			expect(mockResponse.write).toHaveBeenLastCalledWith(
-				`data: ${JSON.stringify(arrayData)}\n\n`
+				frame('array-event', JSON.stringify(arrayData))
 			);
 		});
 
@@ -159,7 +178,7 @@ describe('Connection', () => {
 			connection.send('nested-event', nestedData);
 
 			expect(mockResponse.write).toHaveBeenLastCalledWith(
-				`data: ${JSON.stringify(nestedData)}\n\n`
+				frame('nested-event', JSON.stringify(nestedData))
 			);
 		});
 
@@ -169,7 +188,7 @@ describe('Connection', () => {
 			connection.send('null-event', null);
 
 			expect(mockResponse.write).toHaveBeenLastCalledWith(
-				'data: null\n\n'
+				frame('null-event', 'null')
 			);
 		});
 
@@ -185,8 +204,144 @@ describe('Connection', () => {
 			connection.send<CustomEvent>('typed-event', typedData);
 
 			expect(mockResponse.write).toHaveBeenLastCalledWith(
-				`data: ${JSON.stringify(typedData)}\n\n`
+				frame('typed-event', JSON.stringify(typedData))
 			);
+		});
+
+		it('should strip CR/LF from the event name to prevent SSE injection', () => {
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.send('evil\ndata: forged\nevent: hijack', {
+				ok: true
+			});
+
+			expect(mockResponse.write).toHaveBeenCalledWith(
+				frame('evildata: forgedevent: hijack', '{"ok":true}')
+			);
+		});
+	});
+
+	describe('backpressure', () => {
+		it('should drop frames while the channel is saturated', () => {
+			mockResponse.write.mockReturnValue(false);
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.send('first', { n: 1 });
+			connection.send('second', { n: 2 });
+			connection.send('third', { n: 3 });
+
+			expect(mockResponse.write).toHaveBeenCalledTimes(1);
+		});
+
+		it('should subscribe to drain once when it becomes saturated', () => {
+			mockResponse.write.mockReturnValue(false);
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.send('first', { n: 1 });
+			connection.send('second', { n: 2 });
+
+			expect(mockResponse.once).toHaveBeenCalledTimes(1);
+			expect(mockResponse.once).toHaveBeenCalledWith(
+				'drain',
+				expect.any(Function)
+			);
+		});
+
+		it('should resume writing after the channel drains', () => {
+			let drain: (() => void) | undefined;
+			mockResponse.once.mockImplementation((event, listener) => {
+				if (event === 'drain') drain = listener;
+			});
+			mockResponse.write.mockReturnValue(false);
+
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.send('first', { n: 1 });
+			connection.send('dropped', { n: 2 });
+			expect(mockResponse.write).toHaveBeenCalledTimes(1);
+
+			mockResponse.write.mockReturnValue(true);
+			drain?.();
+
+			connection.send('after-drain', { n: 3 });
+			expect(mockResponse.write).toHaveBeenCalledTimes(2);
+		});
+
+		it('should not write when already saturated', () => {
+			mockResponse.write.mockReturnValue(false);
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.send('first', { n: 1 });
+			mockResponse.write.mockClear();
+
+			connection.write('id: x\nevent: y\ndata: null\n\n');
+
+			expect(mockResponse.write).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('ping', () => {
+		it('should write an SSE comment as a heartbeat', () => {
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.ping();
+
+			expect(mockResponse.write).toHaveBeenCalledWith(': ping\n\n');
+		});
+
+		it('should not send a heartbeat while saturated', () => {
+			mockResponse.write.mockReturnValue(false);
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.send('saturate', { n: 1 });
+			mockResponse.write.mockClear();
+
+			connection.ping();
+
+			expect(mockResponse.write).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('stalledFor', () => {
+		it('should report zero when the channel is not saturated', () => {
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			expect(connection.stalledFor(1000)).toBe(0);
+		});
+
+		it('should report elapsed time since the channel saturated', () => {
+			mockResponse.write.mockReturnValue(false);
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(1000);
+			connection.send('saturate', { n: 1 });
+			nowSpy.mockRestore();
+
+			expect(connection.stalledFor(1500)).toBe(500);
+		});
+
+		it('should reset to zero after the channel drains', () => {
+			let drain: (() => void) | undefined;
+			mockResponse.once.mockImplementation((event, listener) => {
+				if (event === 'drain') drain = listener;
+			});
+			mockResponse.write.mockReturnValue(false);
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.send('saturate', { n: 1 });
+			drain?.();
+
+			expect(connection.stalledFor(Number.MAX_SAFE_INTEGER)).toBe(0);
+		});
+	});
+
+	describe('close', () => {
+		it('should end the underlying channel', () => {
+			const connection = new TestableConnection(mockResponse, 'test-id');
+
+			connection.close();
+
+			expect(mockResponse.end).toHaveBeenCalledTimes(1);
 		});
 	});
 

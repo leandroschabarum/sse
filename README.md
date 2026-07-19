@@ -38,27 +38,61 @@ const server = http.createServer((req, res) => {
 server.listen(3000);
 ```
 
-
 ### Server
 
 The `Server` singleton manages all SSE connections.
 
-#### `Server.createConnection(req, res)`
+#### `Server.createConnection(req, res, id?)`
 
 Creates a new SSE connection from an HTTP request/response pair.
 
 ```typescript
 import { Server } from '@lndr/sse';
 
-// In your HTTP handler
-Server.createConnection(req, res);
+// In your HTTP handler — derive the id from your authenticated session/user
+Server.createConnection(req, res, req.user.id);
 ```
 
-The connection ID is automatically determined from:
+The connection `id` is the routing key used by targeted messaging
+(`Hub.to(id)`). It is taken **only** from the value you pass in; when omitted, a
+random UUID v4 is generated instead:
 
-1. The `x-request-id` header (if present)
+1. The `id` argument supplied by your application (if a non-empty string)
 2. A randomly generated UUID v4 (fallback)
 
+#### `Server.setMaxConnections(max)`
+
+Sets the maximum number of simultaneously tracked connections. When the pool is
+full, further **new** connections are refused; a reconnection that reuses an
+already-tracked id is still accepted.
+
+```typescript
+import { Server } from '@lndr/sse';
+
+Server.setMaxConnections(5000);
+```
+
+If `setMaxConnections` is never called, a conservative default cap of `1000`
+applies — it sits just under the common `ulimit -n` of 1024 so an untuned deploy
+refuses connections gracefully before the OS starts failing with `EMFILE`.
+Deployments that raise their file-descriptor limit should set their own cap to
+match.
+Lowering the limit below the current pool size does not evict existing
+connections; it only prevents new ones from being added until the pool drains
+below the limit.
+
+#### `Server.setHeartbeatInterval(ms)` / `Server.setStalledTimeout(ms)`
+
+Tune the liveness sweep (see [Heartbeat & liveness](#heartbeat--liveness)).
+
+```typescript
+import { Server } from '@lndr/sse';
+
+Server.setHeartbeatInterval(10_000); // sweep every 10s (default 15s)
+Server.setStalledTimeout(60_000); // evict clients stalled > 60s (default 30s)
+```
+
+Both take a positive integer number of milliseconds. A new heartbeat interval is applied immediately if the sweep is already running.
 
 ### Hub
 
@@ -74,6 +108,12 @@ import { Hub } from '@lndr/sse';
 Hub.emit('update', { status: 'complete' });
 ```
 
+The payload is serialized once and the resulting frame is reused for every
+connection, so a broadcast performs a single `JSON.stringify` and a single write
+per client regardless of how many clients are connected. All recipients of a
+given broadcast therefore share the same event `id`, since they receive the same
+logical event.
+
 #### `Hub.to(id).emit(event, data?)`
 
 Sends an event to a specific connection.
@@ -86,6 +126,9 @@ Hub.to('user-123').emit('private-message', { text: 'Hello!' });
 Hub.to('*').emit('announcement', { text: 'Welcome!' });
 ```
 
+`*` is reserved as the broadcast target, so it is rejected as a connection id:
+passing `'*'` (or a value that trims to it) to `Server.createConnection` throws.
+
 ### Connection
 
 Each connection automatically configures the required SSE headers:
@@ -93,7 +136,12 @@ Each connection automatically configures the required SSE headers:
 - `Content-Type: text/event-stream`
 - `Cache-Control: no-cache`
 - `Connection: keep-alive`
+- `X-Accel-Buffering: no` — disables proxy buffering (e.g. nginx) so events
+  reach the client as they are written instead of being held back
 
+Headers are flushed as soon as the connection is created (when the underlying
+response supports `flushHeaders()`), so the stream opens immediately rather than
+on the first event or heartbeat.
 
 ## Usage Examples
 
@@ -125,10 +173,9 @@ app.listen(3000);
 ```typescript
 import { Server, Hub } from '@lndr/sse';
 
-// Client connects with a custom request ID
-// GET /events with header: x-request-id: user-456
+// Bind the connection to the authenticated user id (set by your auth middleware)
 app.get('/events', (req, res) => {
-	Server.createConnection(req, res);
+	Server.createConnection(req, res, req.user.id);
 });
 
 // Send a message to a specific user
@@ -209,8 +256,53 @@ data: {"message":"Hello, World!"}
 
 ```
 
+Because SSE is a line-oriented protocol, CR/LF characters are stripped from the
+event name before it is written, preventing event-stream injection through a
+crafted event name. Payloads are JSON-encoded, so control characters in `data`
+are escaped automatically.
+
 ## Connection Lifecycle
 
 - Connections are automatically tracked when created via `Server.createConnection()`
 - When a client disconnects, the connection is automatically removed from the pool
-- Connection IDs can be specified via the `x-request-id` header for targeted messaging
+- Connection IDs are supplied by the application (e.g. an authenticated user id) for targeted messaging; when omitted a random UUID is used
+- Reconnecting with an id that is already tracked closes the previous connection and takes over its slot, so a stale socket is never left behind
+
+## Heartbeat & liveness
+
+While any connections are open, the server runs a periodic sweep (every 15s by default) that:
+
+- **Pings** each connection with an SSE comment (`: ping`). This keeps proxies
+  and load balancers from closing an idle stream, and surfaces a dead socket —
+  a failed write drops that connection from the pool.
+- **Evicts** any connection that has stayed saturated (a client not draining its
+  socket; see [Backpressure](#backpressure)) longer than the stalled timeout
+  (30s by default), closing it so its socket is reclaimed instead of lingering
+  in the pool receiving nothing.
+
+The sweep starts on the first connection and stops when the pool is empty, and
+its timer never keeps the process alive on its own. Tune it with
+`Server.setHeartbeatInterval()` and `Server.setStalledTimeout()`.
+
+## Backpressure
+
+Each connection honors the underlying socket's backpressure signal. When a write
+reports that the socket buffer is full (a slow or stalled client), further frames
+for that connection are **dropped** until the socket drains, instead of being
+buffered in memory. This bounds memory usage and prevents a single slow client
+from degrading the whole process. Delivery to other clients is unaffected, and
+the slow connection resumes receiving events once it catches up.
+
+## Delivery guarantees
+
+Delivery is **at-most-once, with no replay**. Events are written to whatever
+connections are open at emit time and are never persisted or queued:
+
+- Events emitted while a client is disconnected — including the brief window
+  during an automatic `EventSource` reconnect — are **lost**; they are not
+  redelivered when the client returns.
+- Frames dropped for a saturated client (see [Backpressure](#backpressure)) and
+  frames destined for a connection that is evicted or closed are gone; there is
+  no retransmission.
+- The `Last-Event-ID` reconnection header is **not** honored, so there is no
+  server-side resume from the last received event.
